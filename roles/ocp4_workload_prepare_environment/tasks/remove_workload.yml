@@ -2,10 +2,55 @@
 # ------------------------------------------------
 # Remove RHACM Policy Resources
 # ------------------------------------------------
+# Every resource below belongs to an RHACM CRD, and none of them are
+# guaranteed to be registered when the destroy runs. RHACM may already be
+# partly torn down by an earlier destroy attempt, and these API versions move
+# between releases - ManagedClusterSet went v1beta1 to v1beta2, for example.
+# kubernetes.core.k8s treats an unknown resource type as a hard error rather
+# than as nothing to delete:
+#
+#   Failed to find exact match for
+#   cluster.open-cluster-management.io/v1beta1.Placement by [kind, name, ...]
+#
+# So look up each CRD and take the API version from the cluster rather than
+# hardcoding it.
+
+- name: Initialize the RHACM CRD map
+  ansible.builtin.set_fact:
+    _rhacm_crds: {}
+
+- name: Look up the RHACM CRDs used by this role
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: "{{ item }}"
+  loop:
+  - placementbindings.policy.open-cluster-management.io
+  - policies.policy.open-cluster-management.io
+  - placements.cluster.open-cluster-management.io
+  - managedclustersetbindings.cluster.open-cluster-management.io
+  - managedclustersets.cluster.open-cluster-management.io
+  register: r_rhacm_crds
+
+- name: Record which RHACM CRDs are registered and at which version
+  ansible.builtin.set_fact:
+    _rhacm_crds: >-
+      {{ _rhacm_crds | combine({
+           item.resources[0].metadata.name:
+             item.resources[0].spec.group ~ '/' ~
+             (item.resources[0].spec.versions | selectattr('storage') | map(attribute='name') | first)
+         }) }}
+  loop: "{{ r_rhacm_crds.results | selectattr('resources') | list }}"
+  loop_control:
+    label: "{{ item.item }}"
+
 - name: Remove PlacementBindings
+  when: _crd in _rhacm_crds
+  vars:
+    _crd: placementbindings.policy.open-cluster-management.io
   kubernetes.core.k8s:
     state: absent
-    api_version: policy.open-cluster-management.io/v1
+    api_version: "{{ _rhacm_crds[_crd] }}"
     kind: PlacementBinding
     name: "{{ item }}"
     namespace: "{{ ocp4_workload_prepare_environment_policy_namespace }}"
@@ -14,9 +59,12 @@
   - policy-acs-secured-cluster
 
 - name: Remove Policies
+  when: _crd in _rhacm_crds
+  vars:
+    _crd: policies.policy.open-cluster-management.io
   kubernetes.core.k8s:
     state: absent
-    api_version: policy.open-cluster-management.io/v1
+    api_version: "{{ _rhacm_crds[_crd] }}"
     kind: Policy
     name: "{{ item }}"
     namespace: "{{ ocp4_workload_prepare_environment_policy_namespace }}"
@@ -26,9 +74,12 @@
   - acs-secured-cluster
 
 - name: Remove Placements
+  when: _crd in _rhacm_crds
+  vars:
+    _crd: placements.cluster.open-cluster-management.io
   kubernetes.core.k8s:
     state: absent
-    api_version: cluster.open-cluster-management.io/v1beta1
+    api_version: "{{ _rhacm_crds[_crd] }}"
     kind: Placement
     name: "{{ item }}"
     namespace: "{{ ocp4_workload_prepare_environment_policy_namespace }}"
@@ -38,17 +89,23 @@
   - acs-secured-cluster-placement
 
 - name: Remove ManagedClusterSetBinding
+  when: _crd in _rhacm_crds
+  vars:
+    _crd: managedclustersetbindings.cluster.open-cluster-management.io
   kubernetes.core.k8s:
     state: absent
-    api_version: cluster.open-cluster-management.io/v1beta2
+    api_version: "{{ _rhacm_crds[_crd] }}"
     kind: ManagedClusterSetBinding
     name: "{{ ocp4_workload_prepare_environment_clusterset_name }}"
     namespace: "{{ ocp4_workload_prepare_environment_policy_namespace }}"
 
 - name: Remove ManagedClusterSet
+  when: _crd in _rhacm_crds
+  vars:
+    _crd: managedclustersets.cluster.open-cluster-management.io
   kubernetes.core.k8s:
     state: absent
-    api_version: cluster.open-cluster-management.io/v1beta2
+    api_version: "{{ _rhacm_crds[_crd] }}"
     kind: ManagedClusterSet
     name: "{{ ocp4_workload_prepare_environment_clusterset_name }}"
 
