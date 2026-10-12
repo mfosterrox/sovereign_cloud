@@ -120,10 +120,34 @@
   delay: 10
   until: r_osac_ui_client is succeeded
 
-# trust-manager Bundle needs: OSAC internal CA + system CAs (Google Trust Services,
-# ISRG/Let's Encrypt, etc.).  useDefaultCAs: true covers all public root CAs used
-# by the ingress wildcard cert, so the ingress CA chain is already trusted.
-- name: Add system CAs to trust-manager ca-bundle
+# trust-manager Bundle needs: OSAC internal CA + OCP ingress CA + system CAs.
+# The ingress CA signs the Keycloak route cert; fulfillment services need to trust
+# it when validating OIDC tokens over the external Keycloak URL.
+- name: Read OCP ingress CA from router-ca secret
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: router-ca
+    namespace: openshift-ingress-operator
+  register: r_ingress_ca
+
+- name: Create ingress-ca secret for TLS trust chain
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: ingress-ca
+        namespace: "{{ item }}"
+      type: Opaque
+      data:
+        ca.crt: "{{ r_ingress_ca.resources[0].data['tls.crt'] }}"
+  loop:
+  - "{{ ocp4_workload_osac_namespace }}"
+  - cert-manager
+
+- name: Add system CAs and ingress CA to trust-manager ca-bundle
   kubernetes.core.k8s:
     state: patched
     api_version: trust.cert-manager.io/v1alpha1
@@ -135,6 +159,9 @@
         - secret:
             key: ca.crt
             name: default-ca
+        - secret:
+            key: ca.crt
+            name: ingress-ca
         - useDefaultCAs: true
 
 # The fulfillment-api route is passthrough by default, presenting a cert signed by
@@ -164,8 +191,73 @@
           insecureEdgeTerminationPolicy: Redirect
           destinationCACertificate: "{{ r_default_ca_secret.resources[0].data['ca.crt'] | b64decode }}"
 
-# Patch ConfigMap BEFORE the restart so the pod picks up the correct URL on start.
-- name: Patch osac-ui ConfigMap fulfillment URL to internal service
+# Patch OIDC auth URLs in fulfillment deployments to use the external Keycloak URL.
+# The Helm chart defaults may use an internal or placeholder URL; these must match
+# the actual external Keycloak route that browsers and services reach.
+- name: Read fulfillment-controller for OIDC URL patch
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: fulfillment-controller
+    namespace: "{{ ocp4_workload_osac_namespace }}"
+  register: r_fc_deploy
+
+- name: Patch OIDC auth URLs in fulfillment-controller
+  vars:
+    _container: "{{ r_fc_deploy.resources[0].spec.template.spec.containers[0] }}"
+    _patched_cmd: >-
+      {{ _container.command | default([])
+         | map('regex_replace', '^--auth-issuer-url=.*',
+               '--auth-issuer-url=' + _ocp4_workload_osac_kc_url + '/realms/osac')
+         | map('regex_replace', '^--idp-url=.*',
+               '--idp-url=' + _ocp4_workload_osac_kc_url)
+         | list }}
+  kubernetes.core.k8s:
+    state: patched
+    api_version: apps/v1
+    kind: Deployment
+    name: fulfillment-controller
+    namespace: "{{ ocp4_workload_osac_namespace }}"
+    definition:
+      spec:
+        template:
+          spec:
+            containers:
+            - name: "{{ _container.name }}"
+              command: "{{ _patched_cmd }}"
+
+- name: Read fulfillment-grpc-server for OIDC URL patch
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: fulfillment-grpc-server
+    namespace: "{{ ocp4_workload_osac_namespace }}"
+  register: r_fgs_deploy
+
+- name: Patch OIDC trusted issuers in fulfillment-grpc-server
+  vars:
+    _container: "{{ r_fgs_deploy.resources[0].spec.template.spec.containers[0] }}"
+    _patched_cmd: >-
+      {{ _container.command | default([])
+         | map('regex_replace', '^--grpc-authn-trusted-token-issuers=.*',
+               '--grpc-authn-trusted-token-issuers=' + _ocp4_workload_osac_kc_url + '/realms/osac')
+         | list }}
+  kubernetes.core.k8s:
+    state: patched
+    api_version: apps/v1
+    kind: Deployment
+    name: fulfillment-grpc-server
+    namespace: "{{ ocp4_workload_osac_namespace }}"
+    definition:
+      spec:
+        template:
+          spec:
+            containers:
+            - name: "{{ _container.name }}"
+              command: "{{ _patched_cmd }}"
+
+# Patch ConfigMap BEFORE the restart so the pod picks up the correct URLs on start.
+- name: Patch osac-ui ConfigMap with fulfillment URL and OIDC issuer
   kubernetes.core.k8s:
     state: patched
     api_version: v1
@@ -175,6 +267,7 @@
     definition:
       data:
         FULFILLMENT_API_URL: "https://fulfillment-internal-api:8001"
+        OIDC_ISSUER_URL: "{{ _ocp4_workload_osac_kc_url }}/realms/osac"
 
 # Envoy's default nofile ulimit is too low for lab load; wrap the entrypoint so
 # ulimit is raised before envoy starts. Applied before the restart below.
@@ -192,6 +285,19 @@
       - /bin/sh
       - -c
       - ulimit -n 524288 && exec envoy --config-path /etc/envoy/envoy.yaml
+
+# Prevent AAP storage fulfillment jobs from failing on a missing local_storage role.
+- name: Clear STORAGE_TIERS in storage-operations-ig ConfigMap
+  kubernetes.core.k8s:
+    state: patched
+    api_version: v1
+    kind: ConfigMap
+    name: storage-operations-ig
+    namespace: "{{ ocp4_workload_osac_namespace }}"
+    definition:
+      data:
+        STORAGE_TIERS: ""
+  failed_when: false
 
 - name: Restart fulfillment controller, gRPC server, and OSAC UI
   kubernetes.core.k8s:
