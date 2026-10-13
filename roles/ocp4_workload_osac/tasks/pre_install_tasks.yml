@@ -115,3 +115,9 @@
       src: /tmp/aap-license.zip
       dest: "~{{ ansible_user }}/{{ ocp4_workload_osac_installer_directory }}//values/{{ ocp4_workload_osac_installer_profile }}/license.zip"
       mode: ug=rw,go=r
+
+  - name: Install libvirt-client package
+    when: ocp4_workload_osac_bmf_enabled | bool
+    ansible.builtin.package:
+      name: libvirt-client
+      state: present
