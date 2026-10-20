@@ -1,0 +1,140 @@
+---
+- name: Add sushy VM to inventory
+  ansible.builtin.add_host:
+    name: sushy_vm
+    ansible_host: 10.10.10.2
+    ansible_user: root
+    ansible_ssh_common_args: >-
+      -o ProxyJump={{ hostvars[_bastion_host]['ansible_user'] | default('ec2-user') }}@{{
+      hostvars[_bastion_host]['ansible_host'] | default(_bastion_host) }}
+      -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+
+- name: Set up Sushy VM
+  delegate_to: sushy_vm
+  block:
+  - name: Install KVM and Sushy dependencies
+    ansible.builtin.dnf:
+      name:
+      - qemu-kvm
+      - libvirt
+      - virt-install
+      - python3-pip
+      - python3-devel
+      - gcc
+      - pkgconf-pkg-config
+      - python3-libvirt
+      - coreos-installer
+      state: present
+
+  - name: Enable libvirt sockets
+    ansible.builtin.systemd:
+      name: "{{ item }}"
+      enabled: true
+      state: started
+    loop:
+    - virtqemud.socket
+    - virtnetworkd.socket
+    - virtstoraged.socket
+
+  - name: Install sushy-tools into virtual environment
+    ansible.builtin.pip:
+      name:
+      - pip
+      - sushy-tools==2.1.0
+      virtualenv: /opt/sushy
+      virtualenv_command: python3 -m venv --system-site-packages
+      state: present
+
+  - name: Create sushy config directory
+    ansible.builtin.file:
+      path: /etc/sushy
+      state: directory
+      mode: "0755"
+
+  - name: Write sushy configuration
+    ansible.builtin.copy:
+      dest: /etc/sushy/sushy-emulator.conf
+      mode: "0644"
+      content: |
+        SUSHY_EMULATOR_LISTEN_IP = u'0.0.0.0'
+        SUSHY_EMULATOR_LISTEN_PORT = 8000
+        SUSHY_EMULATOR_LIBVIRT_URI = u'qemu:///system'
+
+  - name: Write sushy systemd unit
+    ansible.builtin.copy:
+      dest: /etc/systemd/system/sushy-emulator.service
+      mode: "0644"
+      content: |
+        [Unit]
+        Description=Sushy Redfish emulator
+        After=network.target virtqemud.socket
+
+        [Service]
+        ExecStart=/opt/sushy/bin/sushy-emulator --config /etc/sushy/sushy-emulator.conf
+        Restart=on-failure
+
+        [Install]
+        WantedBy=multi-user.target
+
+  - name: Enable and start sushy-emulator
+    ansible.builtin.systemd:
+      name: sushy-emulator
+      enabled: true
+      state: started
+      daemon_reload: true
+
+  - name: Read current nftables ruleset
+    ansible.builtin.command: nft list ruleset
+    register: _nft_ruleset
+    changed_when: false
+
+  - name: Add forward rule virbr0 -> enp2s0 (Ironic hub)
+    ansible.builtin.command: >-
+      nft insert rule inet filter forward iifname virbr0 oifname enp2s0 accept
+    when: '"iifname \"virbr0\" oifname \"enp2s0\" accept" not in _nft_ruleset.stdout'
+    changed_when: true
+
+  - name: Add return forward rule enp2s0 -> virbr0 (Ironic hub)
+    ansible.builtin.command: >-
+      nft insert rule inet filter forward iifname enp2s0 oifname virbr0
+      ct state established,related accept
+    when: >-
+      'iifname "enp2s0" oifname "virbr0" ct state established,related accept'
+      not in _nft_ruleset.stdout
+    changed_when: true
+
+  - name: Add NAT masquerade for libvirt network -> enp2s0
+    ansible.builtin.command: >-
+      nft add rule inet nat postrouting
+      ip saddr 192.168.122.0/24 oifname enp2s0 masquerade
+    when: '"ip saddr 192.168.122.0/24 oifname \"enp2s0\" masquerade" not in _nft_ruleset.stdout'
+    changed_when: true
+
+  - name: Add forward rule virbr0 -> enp1s0 (internet)
+    ansible.builtin.command: >-
+      nft add rule inet filter forward iifname virbr0 oifname enp1s0 accept
+    when: '"iifname \"virbr0\" oifname \"enp1s0\" accept" not in _nft_ruleset.stdout'
+    changed_when: true
+
+  - name: Add return forward rule enp1s0 -> virbr0 (internet)
+    ansible.builtin.command: >-
+      nft add rule inet filter forward iifname enp1s0 oifname virbr0
+      ct state established,related accept
+    when: >-
+      'iifname "enp1s0" oifname "virbr0" ct state established,related accept'
+      not in _nft_ruleset.stdout
+    changed_when: true
+
+  - name: Create nat prerouting chain if absent
+    ansible.builtin.command: >-
+      nft add chain inet nat prerouting
+      '{ type nat hook prerouting priority dstnat; }'
+    when: '"prerouting" not in _nft_ruleset.stdout'
+    changed_when: true
+
+  - name: Add DNAT rule for Ironic VIP :6180 -> 10.10.10.11
+    ansible.builtin.command: >-
+      nft add rule inet nat prerouting
+      ip daddr 10.10.10.100 tcp dport 6180 dnat to 10.10.10.11
+    when: '"ip daddr 10.10.10.100 tcp dport 6180 dnat to 10.10.10.11" not in _nft_ruleset.stdout'
+    changed_when: true
