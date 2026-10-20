@@ -35,17 +35,12 @@
 #     state: absent
 
 - name: Add BMF VM to inventory
-  vars:
-    _buser: "{{ bastion_ansible_user }}"
-    _bpass: "{{ bastion_ansible_ssh_pass }}"
-    _bhost: "{{ bastion_ansible_host }}"
-    _bport: "{{ bastion_ansible_port | default(22) }}"
   ansible.builtin.add_host:
     name: bmf_vm
     ansible_host: 10.10.10.2
     ansible_user: root
     ansible_ssh_common_args: >-
       -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
-      -o 'ProxyCommand=sshpass -p {{ _bpass }} ssh -W %h:%p
-      -p {{ _bport }} -o StrictHostKeyChecking=no
-      -o UserKnownHostsFile=/dev/null {{ _buser }}@{{ _bhost }}'
+      -o 'ProxyCommand=sshpass -p {{ bastion_ansible_ssh_pass }} ssh -W %h:%p
+      -p {{ bastion_ansible_port }} -o StrictHostKeyChecking=no
+      -o UserKnownHostsFile=/dev/null {{ bastion_ansible_user }}@{{ bastion_ansible_host }}'
