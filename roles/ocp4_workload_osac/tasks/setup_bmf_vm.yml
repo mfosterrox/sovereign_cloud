@@ -1,7 +1,7 @@
 ---
-- name: Add sushy VM to inventory
+- name: Add BMF VM to inventory
   ansible.builtin.add_host:
-    name: sushy_vm
+    name: bmf_vm
     ansible_host: 10.10.10.2
     ansible_user: root
     ansible_ssh_common_args: >-
@@ -9,11 +9,12 @@
       hostvars[_bastion_host]['ansible_host'] | default(_bastion_host) }}
       -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
 
-- name: Set up Sushy VM
-  delegate_to: sushy_vm
+- name: Set up BMF VM
+  delegate_to: bmf_vm
   block:
   - name: Install KVM and Sushy dependencies
     ansible.builtin.dnf:
+      state: present
       name:
       - qemu-kvm
       - libvirt
@@ -24,7 +25,6 @@
       - pkgconf-pkg-config
       - python3-libvirt
       - coreos-installer
-      state: present
 
   - name: Enable libvirt sockets
     ansible.builtin.systemd:
@@ -49,12 +49,12 @@
     ansible.builtin.file:
       path: /etc/sushy
       state: directory
-      mode: "0755"
+      mode: ug=rwx,o=rx
 
   - name: Write sushy configuration
     ansible.builtin.copy:
       dest: /etc/sushy/sushy-emulator.conf
-      mode: "0644"
+      mode: ug=rw,go=r
       content: |
         SUSHY_EMULATOR_LISTEN_IP = u'0.0.0.0'
         SUSHY_EMULATOR_LISTEN_PORT = 8000
@@ -63,7 +63,7 @@
   - name: Write sushy systemd unit
     ansible.builtin.copy:
       dest: /etc/systemd/system/sushy-emulator.service
-      mode: "0644"
+      mode: ug=rw,go=r
       content: |
         [Unit]
         Description=Sushy Redfish emulator
