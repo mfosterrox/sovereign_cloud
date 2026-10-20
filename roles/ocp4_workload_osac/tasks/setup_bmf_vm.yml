@@ -1,20 +1,4 @@
 ---
-- name: Remove macOS-only UseKeychain from SSH config
-  ansible.builtin.lineinfile:
-    path: /root/.ssh/config
-    regexp: '(?i)^\s*UseKeychain\b'
-    state: absent
-
-- name: Add BMF VM to inventory
-  ansible.builtin.add_host:
-    name: bmf_vm
-    ansible_host: 10.10.10.2
-    ansible_user: root
-    ansible_ssh_common_args: >-
-      -o ProxyJump={{ hostvars[_bastion_host]['ansible_user'] | default('ec2-user') }}@{{
-      hostvars[_bastion_host]['ansible_host'] | default(_bastion_host) }}
-      -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
-
 - name: Set up BMF VM
   delegate_to: bmf_vm
   block:

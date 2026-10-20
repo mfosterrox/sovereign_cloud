@@ -27,3 +27,23 @@
   when: _bastion_host is not defined
   ansible.builtin.debug:
     msg: "No bastion host available - aborting installation."
+
+- name: Remove macOS-only UseKeychain from SSH config
+  ansible.builtin.lineinfile:
+    path: /root/.ssh/config
+    regexp: '(?i)^\s*UseKeychain\b'
+    state: absent
+
+- name: Add BMF VM to inventory
+  when: _bastion_host is defined
+  vars:
+    _buser: "{{ hostvars[_bastion_host]['ansible_user'] | default('ec2-user') }}"
+    _bhost: "{{ hostvars[_bastion_host]['ansible_host'] | default(_bastion_host) }}"
+    _bport: "{{ hostvars[_bastion_host]['ansible_port'] | default(22) }}"
+  ansible.builtin.add_host:
+    name: bmf_vm
+    ansible_host: 10.10.10.2
+    ansible_user: root
+    ansible_ssh_common_args: >-
+      -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+      -o ProxyJump={{ _buser }}@{{ _bhost }}:{{ _bport }}

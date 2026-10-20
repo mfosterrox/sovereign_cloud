@@ -1,6 +1,6 @@
 ---
-- name: Call setup_bastion_inventory.yml
-  ansible.builtin.include_tasks: setup_bastion_inventory.yml
+- name: Call setup_inventory.yml
+  ansible.builtin.include_tasks: setup_inventory.yml
 
 - name: Call setup_bmf_vm.yml
   ansible.builtin.include_tasks: setup_bmf_vm.yml
