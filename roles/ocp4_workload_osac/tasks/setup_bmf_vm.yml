@@ -26,11 +26,30 @@
     - virtnetworkd.socket
     - virtstoraged.socket
 
+  - name: Start virtqemud service so daemon is ready before sushy connects
+    ansible.builtin.systemd:
+      name: virtqemud.service
+      state: started
+      enabled: true
+
+  - name: Start default libvirt network (creates virbr0)
+    ansible.builtin.command: virsh net-start default
+    register: _virsh_net_start
+    failed_when:
+    - _virsh_net_start.rc != 0
+    - '"already active" not in _virsh_net_start.stderr'
+    changed_when: _virsh_net_start.rc == 0
+
+  - name: Set default libvirt network to autostart
+    ansible.builtin.command: virsh net-autostart default
+    register: _virsh_net_auto
+    changed_when: '"marked as autostarted" in _virsh_net_auto.stdout'
+
   - name: Install sushy-tools into virtual environment
     ansible.builtin.pip:
       name:
       - pip
-      - sushy-tools==2.1.0
+      - sushy-tools==2.2.0
       virtualenv: /opt/sushy
       virtualenv_command: python3 -m venv --system-site-packages
       state: present
