@@ -34,11 +34,35 @@
 #     regexp: '(?i)^\s*UseKeychain\b'
 #     state: absent
 
+- name: Find bastion SSH private key
+  delegate_to: "{{ _bastion_host }}"
+  become: true
+  ansible.builtin.find:
+    paths: /root/.ssh
+    patterns: "bastion_*"
+    excludes: "*.pub"
+    file_type: file
+  register: _bastion_key_files
+
+- name: Fetch bastion SSH private key
+  delegate_to: "{{ _bastion_host }}"
+  become: true
+  ansible.builtin.slurp:
+    src: "{{ _bastion_key_files.files[0].path }}"
+  register: _bastion_key
+
+- name: Write bastion SSH private key to EE
+  ansible.builtin.copy:
+    content: "{{ _bastion_key.content | b64decode }}"
+    dest: /tmp/bmf_vm_id
+    mode: "0600"
+
 - name: Add BMF VM to inventory
   ansible.builtin.add_host:
     name: bmf_vm
     ansible_host: 10.10.10.2
     ansible_user: root
+    ansible_ssh_private_key_file: /tmp/bmf_vm_id
     ansible_ssh_common_args: >-
       -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
       -o 'ProxyCommand=sshpass -p {{ bastion_ansible_ssh_pass }} ssh -W %h:%p
