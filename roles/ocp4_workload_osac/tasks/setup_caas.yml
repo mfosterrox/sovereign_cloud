@@ -1,17 +1,5 @@
 ---
-# --------------------------------------------------------------
-# Metal3 must watch the osac namespace for the virtual BMHs
-# --------------------------------------------------------------
-- name: Enable watchAllNamespaces on Metal3 provisioning
-  kubernetes.core.k8s:
-    state: patched
-    api_version: metal3.io/v1alpha1
-    kind: Provisioning
-    name: provisioning-configuration
-    definition:
-      spec:
-        watchAllNamespaces: true
-
+# Metal3 provisioning and namespace watching are configured by the infra chart.
 - name: Wait for metal3-baremetal-operator rollout
   kubernetes.core.k8s_info:
     api_version: apps/v1
@@ -37,34 +25,6 @@
     r_bmo_webhook_ep.resources[0].subsets | default([]) | map(attribute='addresses', default=[]) | flatten | length > 0
   retries: 30
   delay: 10
-
-# ------------------------------------------------------------------
-# Hosted cluster settings for RHDP (no DNS provider, single replica)
-# ------------------------------------------------------------------
-- name: Read cluster base domain
-  kubernetes.core.k8s_info:
-    api_version: config.openshift.io/v1
-    kind: DNS
-    name: cluster
-  register: r_cluster_dns
-
-- name: Configure cluster-fulfillment-ig for RHDP
-  vars:
-    _hosted_domain: "hosted.{{ r_cluster_dns.resources[0].spec.baseDomain }}"
-  kubernetes.core.k8s:
-    state: patched
-    api_version: v1
-    kind: ConfigMap
-    name: cluster-fulfillment-ig
-    namespace: "{{ ocp4_workload_osac_namespace }}"
-    definition:
-      data:
-        DNS_CLASS: dns.noop.dns
-        EXTERNAL_ACCESS_BASE_DOMAIN: "{{ _hosted_domain }}"
-        HOSTED_CLUSTER_BASE_DOMAIN: "{{ _hosted_domain }}"
-        HOSTED_CLUSTER_CONTROLLER_AVAILABILITY_POLICY: SingleReplica
-        HOSTED_CLUSTER_INFRASTRUCTURE_AVAILABILITY_POLICY: SingleReplica
-        NETWORK_STEPS_COLLECTION: ci.steps
 
 # ---------------------------------------------------------------------
 # Hub nodes route the libvirt guest network via the BMF host.

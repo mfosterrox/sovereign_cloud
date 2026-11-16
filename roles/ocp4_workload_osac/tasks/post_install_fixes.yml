@@ -23,67 +23,10 @@
   loop_control:
     label: "{{ item.metadata.name }}"
 
-# --------------------------------------------------------------
-# Keycloak public URL configuration (required for browser login)
-# --------------------------------------------------------------
-- name: Set Keycloak hostname facts
+# Keycloak ingress, CA trust and OIDC URLs are configured by the Helm charts.
+- name: Set Keycloak URL for session configuration
   ansible.builtin.set_fact:
-    _ocp4_workload_osac_kc_host: "keycloak-keycloak.{{ openshift_cluster_ingress_domain }}"
     _ocp4_workload_osac_kc_url: "https://keycloak-keycloak.{{ openshift_cluster_ingress_domain }}"
-    _ocp4_workload_osac_ui_url: >-
-      https://osac-ui-{{ ocp4_workload_osac_namespace }}.{{ openshift_cluster_ingress_domain }}
-
-- name: Read Keycloak deployment
-  kubernetes.core.k8s_info:
-    api_version: apps/v1
-    kind: Deployment
-    name: keycloak-service
-    namespace: keycloak
-  register: r_kc_deploy
-
-- name: Read Keycloak CA certificate from secret
-  kubernetes.core.k8s_info:
-    api_version: v1
-    kind: Secret
-    name: keycloak-tls-cert
-    namespace: keycloak
-  register: r_kc_tls_secret
-
-- name: Convert Keycloak Route from passthrough to reencrypt
-  kubernetes.core.k8s:
-    state: patched
-    api_version: route.openshift.io/v1
-    kind: Route
-    name: keycloak
-    namespace: keycloak
-    definition:
-      spec:
-        tls:
-          termination: reencrypt
-          insecureEdgeTerminationPolicy: Redirect
-          destinationCACertificate: "{{ r_kc_tls_secret.resources[0].data['ca.crt'] | b64decode }}"
-
-- name: Test Keycloak admin credentials (configured user)
-  ansible.builtin.uri:
-    url: "{{ _ocp4_workload_osac_kc_url }}/realms/master/protocol/openid-connect/token"
-    method: POST
-    body_format: form-urlencoded
-    body:
-      grant_type: password
-      client_id: admin-cli
-      username: "{{ ocp4_workload_osac_admin_user }}"
-      password: "{{ _ocp4_workload_osac_admin_password }}"
-    validate_certs: false
-    status_code: [200, 400, 401]
-  register: r_kc_auth_test
-  failed_when: false
-
-- name: Set effective Keycloak admin credentials
-  ansible.builtin.set_fact:
-    _ocp4_workload_osac_kc_admin_user: >-
-      {{ ocp4_workload_osac_admin_user if r_kc_auth_test.status == 200 else 'admin' }}
-    _ocp4_workload_osac_kc_admin_password: >-
-      {{ _ocp4_workload_osac_admin_password if r_kc_auth_test.status == 200 else 'admin' }}
 
 # community.general's Keycloak modules redirect to middleware_automation.keycloak, which
 # is not in the execution environment, so these use the admin REST API directly.
@@ -95,8 +38,8 @@
     body:
       grant_type: password
       client_id: admin-cli
-      username: "{{ _ocp4_workload_osac_kc_admin_user }}"
-      password: "{{ _ocp4_workload_osac_kc_admin_password }}"
+      username: "{{ ocp4_workload_osac_admin_user }}"
+      password: "{{ _ocp4_workload_osac_admin_password }}"
     validate_certs: false
   register: r_kc_token
   no_log: true
@@ -126,50 +69,6 @@
     status_code: [200, 204]
     validate_certs: false
 
-# trust-manager Bundle needs: OSAC internal CA + OCP ingress CA + system CAs.
-# The ingress CA signs the Keycloak route cert; fulfillment services need to trust
-# it when validating OIDC tokens over the external Keycloak URL.
-- name: Read OCP ingress CA from router-ca secret
-  kubernetes.core.k8s_info:
-    api_version: v1
-    kind: Secret
-    name: router-ca
-    namespace: openshift-ingress-operator
-  register: r_ingress_ca
-
-- name: Create ingress-ca secret for TLS trust chain
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: ingress-ca
-        namespace: "{{ item }}"
-      type: Opaque
-      data:
-        ca.crt: "{{ r_ingress_ca.resources[0].data['tls.crt'] }}"
-  loop:
-  - "{{ ocp4_workload_osac_namespace }}"
-  - cert-manager
-
-- name: Add system CAs and ingress CA to trust-manager ca-bundle
-  kubernetes.core.k8s:
-    state: patched
-    api_version: trust.cert-manager.io/v1alpha1
-    kind: Bundle
-    name: ca-bundle
-    definition:
-      spec:
-        sources:
-        - secret:
-            key: ca.crt
-            name: default-ca
-        - secret:
-            key: ca.crt
-            name: ingress-ca
-        - useDefaultCAs: true
-
 # The fulfillment-api route is passthrough by default, presenting a cert signed by
 # OSAC's internal default-ca (not a public CA), which browsers reject.
 # Switch to reencrypt so the router (which holds the cluster wildcard cert) terminates
@@ -197,87 +96,8 @@
           insecureEdgeTerminationPolicy: Redirect
           destinationCACertificate: "{{ r_default_ca_secret.resources[0].data['ca.crt'] | b64decode }}"
 
-# Patch OIDC auth URLs in fulfillment deployments to use the external Keycloak URL.
-# The Helm chart defaults may use an internal or placeholder URL; these must match
-# the actual external Keycloak route that browsers and services reach.
-- name: Read fulfillment-controller for OIDC URL patch
-  kubernetes.core.k8s_info:
-    api_version: apps/v1
-    kind: Deployment
-    name: fulfillment-controller
-    namespace: "{{ ocp4_workload_osac_namespace }}"
-  register: r_fc_deploy
-
-- name: Patch OIDC auth URLs in fulfillment-controller
-  vars:
-    _container: "{{ r_fc_deploy.resources[0].spec.template.spec.containers[0] }}"
-    _patched_cmd: >-
-      {{ _container.command | default([])
-         | map('regex_replace', '^--auth-issuer-url=.*',
-               '--auth-issuer-url=' + _ocp4_workload_osac_kc_url + '/realms/osac')
-         | map('regex_replace', '^--idp-url=.*',
-               '--idp-url=' + _ocp4_workload_osac_kc_url)
-         | list }}
-  kubernetes.core.k8s:
-    state: patched
-    api_version: apps/v1
-    kind: Deployment
-    name: fulfillment-controller
-    namespace: "{{ ocp4_workload_osac_namespace }}"
-    definition:
-      spec:
-        template:
-          spec:
-            containers:
-            - name: "{{ _container.name }}"
-              command: "{{ _patched_cmd }}"
-
-- name: Read fulfillment-grpc-server for OIDC URL patch
-  kubernetes.core.k8s_info:
-    api_version: apps/v1
-    kind: Deployment
-    name: fulfillment-grpc-server
-    namespace: "{{ ocp4_workload_osac_namespace }}"
-  register: r_fgs_deploy
-
-- name: Patch OIDC trusted issuers in fulfillment-grpc-server
-  vars:
-    _container: "{{ r_fgs_deploy.resources[0].spec.template.spec.containers[0] }}"
-    _patched_cmd: >-
-      {{ _container.command | default([])
-         | map('regex_replace', '^--grpc-authn-trusted-token-issuers=.*',
-               '--grpc-authn-trusted-token-issuers=' + _ocp4_workload_osac_kc_url + '/realms/osac')
-         | list }}
-  kubernetes.core.k8s:
-    state: patched
-    api_version: apps/v1
-    kind: Deployment
-    name: fulfillment-grpc-server
-    namespace: "{{ ocp4_workload_osac_namespace }}"
-    definition:
-      spec:
-        template:
-          spec:
-            containers:
-            - name: "{{ _container.name }}"
-              command: "{{ _patched_cmd }}"
-
-# Patch ConfigMap BEFORE the restart so the pod picks up the correct URLs on start.
-- name: Patch osac-ui ConfigMap with fulfillment URL and OIDC issuer
-  kubernetes.core.k8s:
-    state: patched
-    api_version: v1
-    kind: ConfigMap
-    name: osac-ui
-    namespace: "{{ ocp4_workload_osac_namespace }}"
-    definition:
-      data:
-        FULFILLMENT_API_URL: "https://fulfillment-internal-api:8001"
-        OIDC_ISSUER_URL: "{{ _ocp4_workload_osac_kc_url }}/realms/osac"
-
 # Envoy's default nofile ulimit is too low for lab load; wrap the entrypoint so
-# ulimit is raised before envoy starts. Applied before the restart below.
-# This triggers a restart of the fulfillment-ingress-proxy pod.
+# ulimit is raised before envoy starts. The pod template change restarts the proxy.
 - name: Raise Envoy file descriptor limit on fulfillment-ingress-proxy
   kubernetes.core.k8s_json_patch:
     api_version: apps/v1
@@ -291,36 +111,3 @@
       - /bin/sh
       - -c
       - ulimit -n 524288 && exec envoy --config-path /etc/envoy/envoy.yaml
-
-# Prevent AAP storage fulfillment jobs from failing on a missing local_storage role.
-- name: Clear STORAGE_TIERS in storage-operations-ig ConfigMap
-  kubernetes.core.k8s:
-    state: patched
-    api_version: v1
-    kind: ConfigMap
-    name: storage-operations-ig
-    namespace: "{{ ocp4_workload_osac_namespace }}"
-    definition:
-      data:
-        STORAGE_TIERS: ""
-  failed_when: false
-
-- name: Restart fulfillment controller, gRPC server, OSAC UI, and OSAC operator
-  kubernetes.core.k8s:
-    state: patched
-    api_version: apps/v1
-    kind: Deployment
-    name: "{{ item }}"
-    namespace: "{{ ocp4_workload_osac_namespace }}"
-    definition:
-      spec:
-        template:
-          metadata:
-            annotations:
-              kubectl.kubernetes.io/restartedAt: "{{ now(utc=true).isoformat() }}"
-  loop:
-  - fulfillment-controller
-  - fulfillment-grpc-server
-  - osac-ui
-  # Holds its CA pool in memory; must restart after the Keycloak route/ca-bundle changes above
-  - osac-operator

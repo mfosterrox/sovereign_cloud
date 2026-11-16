@@ -1,29 +1,102 @@
 ---
+- name: Read cluster base domain for hosted lab clusters
+  when: ocp4_workload_osac_bmf_enabled | bool
+  kubernetes.core.k8s_info:
+    api_version: config.openshift.io/v1
+    kind: DNS
+    name: cluster
+  register: r_cluster_dns
+
 - name: Setup Helm deployment options
   delegate_to: "{{ _bastion_host }}"
   block:
-  - name: Disable cert-manager deployment in operators chart (pre-installed via platform)
-    ansible.builtin.replace:
-      path: >-
+  - name: Read infra Helm values
+    ansible.builtin.slurp:
+      src: >-
         ~{{ ansible_user }}/{{ ocp4_workload_osac_installer_directory }}/values/{{ ocp4_workload_osac_installer_profile }}/infra.yaml
-      regexp: '(certManager:\n\s+enabled:\s+)\w+'
-      replace: '\g<1>false'
+    register: r_osac_infra_values
+    no_log: true
 
-  - name: Disable BM-as-a-Service (no bare-metal backend configured)
-    when: not ocp4_workload_osac_bmf_enabled | bool
-    ansible.builtin.replace:
-      path: >-
+  - name: Configure lab infra Helm values
+    vars:
+      _ocp4_workload_osac_infra_overrides:
+        certManager:
+          enabled: false  # Pre-installed by the platform
+        lvms:
+          enabled: "{{ ocp4_workload_osac_lvms_enabled | bool }}"
+        metal3:
+          enabled: "{{ ocp4_workload_osac_bmf_enabled | bool }}"
+        keycloak:
+          adminUsername: "{{ ocp4_workload_osac_admin_user }}"
+          adminPassword: "{{ _ocp4_workload_osac_admin_password }}"
+          defaultUserPassword: "{{ _ocp4_workload_osac_user_password }}"
+          route:
+            publicIngress: true
+    ansible.builtin.copy:
+      dest: >-
+        ~{{ ansible_user }}/{{ ocp4_workload_osac_installer_directory }}/values/{{ ocp4_workload_osac_installer_profile }}/infra.yaml
+      content: >-
+        {{
+          r_osac_infra_values.content | b64decode | from_yaml
+          | combine(_ocp4_workload_osac_infra_overrides, recursive=true)
+          | combine(
+              {'lvms': {'deviceSelector': {'optionalPaths': ocp4_workload_osac_lvms_disks}}}
+              if ocp4_workload_osac_lvms_enabled | bool and ocp4_workload_osac_lvms_disks | length > 0
+              else {},
+              recursive=true
+            )
+          | to_nice_yaml(indent=2)
+        }}
+      owner: "{{ ansible_user }}"
+      mode: ug=rw,o=r
+    no_log: true
+
+  - name: Read instance Helm values
+    ansible.builtin.slurp:
+      src: >-
         ~{{ ansible_user }}/{{ ocp4_workload_osac_installer_directory }}/values/{{ ocp4_workload_osac_installer_profile }}/instance.yaml
-      regexp: '(bmaas:\n\s+enabled:\s+)\w+'
-      replace: '\g<1>false'
+    register: r_osac_instance_values
+    no_log: true
 
-  - name: Disable LVM Storage in infra values file
-    when: not ocp4_workload_osac_lvms_enabled | bool
-    ansible.builtin.replace:
-      path: >-
-        ~{{ ansible_user }}/{{ ocp4_workload_osac_installer_directory }}/values/{{ ocp4_workload_osac_installer_profile }}/infra.yaml
-      regexp: '(lvms:\n\s+enabled:\s+)\w+'
-      replace: '\g<1>false'
+  - name: Configure lab instance Helm values
+    vars:
+      _ocp4_workload_osac_instance_overrides:
+        global:
+          services:
+            bmaas:
+              enabled: "{{ ocp4_workload_osac_bmf_enabled | bool }}"
+        bmf:
+          metal3:
+            enabled: "{{ ocp4_workload_osac_bmf_enabled | bool }}"
+            namespace: "{{ ocp4_workload_osac_namespace }}"
+      _ocp4_workload_osac_caas_overrides:
+        aap:
+          instanceGroups:
+            clusterFulfillment:
+              config:
+                DNS_CLASS: dns.noop.dns
+                EXTERNAL_ACCESS_BASE_DOMAIN: "hosted.{{ r_cluster_dns.resources[0].spec.baseDomain }}"
+                HOSTED_CLUSTER_BASE_DOMAIN: "hosted.{{ r_cluster_dns.resources[0].spec.baseDomain }}"
+                HOSTED_CLUSTER_CONTROLLER_AVAILABILITY_POLICY: SingleReplica
+                HOSTED_CLUSTER_INFRASTRUCTURE_AVAILABILITY_POLICY: SingleReplica
+    ansible.builtin.copy:
+      dest: >-
+        ~{{ ansible_user }}/{{ ocp4_workload_osac_installer_directory }}/values/{{ ocp4_workload_osac_installer_profile }}/instance.yaml
+      content: >-
+        {{
+          r_osac_instance_values.content | b64decode | from_yaml
+          | combine(_ocp4_workload_osac_instance_overrides, recursive=true)
+          | combine(_ocp4_workload_osac_caas_overrides if ocp4_workload_osac_bmf_enabled | bool else {}, recursive=true)
+          | combine(
+              {'ui': {'images': {'ui': 'ghcr.io/osac-project/osac-ui:' + ocp4_workload_osac_ui_image_tag}}}
+              if ocp4_workload_osac_ui_image_tag | default('') | length > 0 else {},
+              recursive=true
+            )
+          | to_nice_yaml(indent=2)
+        }}
+      owner: "{{ ansible_user }}"
+      mode: ug=rw,o=r
+    no_log: true
 
   - name: Set up LVM Storage
     when: ocp4_workload_osac_lvms_enabled | bool
@@ -42,29 +115,12 @@
         regexp: openshift-storage
         replace: openshift-lvm-storage
 
-    - name: Patch LVMCluster with configured disk paths in osac-infra
-      when: ocp4_workload_osac_lvms_disks | length > 0
-      ansible.builtin.template:
-        src: lvms-cluster-config.yaml.j2
-        dest: >-
-          ~{{ ansible_user }}/{{ ocp4_workload_osac_installer_directory }}/charts/osac-infra/templates/lvms.yaml
-        owner: "{{ ansible_user }}"
-        mode: ug=rw,o=r
-
     - name: Patch LVMS configure-lvms.sh namespace to openshift-lvm-storage in osac-infra
       ansible.builtin.replace:
         path: >-
           ~{{ ansible_user }}/{{ ocp4_workload_osac_installer_directory }}/charts/osac-infra/files/hooks/configure-lvms.sh
         regexp: openshift-storage
         replace: openshift-lvm-storage
-
-  - name: Set osac-ui image tag to {{ ocp4_workload_osac_ui_image_tag | default('') }}
-    when: ocp4_workload_osac_ui_image_tag | default('') | length > 0
-    ansible.builtin.replace:
-      path: >-
-        ~{{ ansible_user }}/{{ ocp4_workload_osac_installer_directory }}/values/{{ ocp4_workload_osac_installer_profile }}/instance.yaml
-      regexp: '(ghcr\.io/osac-project/osac-ui:)\S+'
-      replace: '\g<1>{{ ocp4_workload_osac_ui_image_tag }}'
 
   - name: Patch keycloak set-passwords script - exact user lookup
     ansible.builtin.replace:
@@ -87,23 +143,6 @@
       regexp: 'Could not find user.*return 1'
       replace: 'User $username not found, skipping"; return 0'
 
-  - name: Set Keycloak admin credentials in infra values file
-    ansible.builtin.lineinfile:
-      path: >-
-        ~{{ ansible_user }}/{{ ocp4_workload_osac_installer_directory }}/values/{{ ocp4_workload_osac_installer_profile }}/infra.yaml
-      insertafter: '^keycloak:'
-      regexp: '^\s+{{ item.key }}:'
-      line: '  {{ item.key }}: {{ item.value }}'
-    loop:
-    - key: adminUsername
-      value: "{{ ocp4_workload_osac_admin_user }}"
-    - key: adminPassword
-      value: "{{ _ocp4_workload_osac_admin_password }}"
-    - key: defaultUserPassword
-      value: "{{ _ocp4_workload_osac_user_password }}"
-    loop_control:
-      label: "{{ item.key }}"
-
   - name: Find Helm hook YAML files
     ansible.builtin.find:
       paths: "~{{ ansible_user }}/{{ ocp4_workload_osac_installer_directory }}/charts"
@@ -112,19 +151,22 @@
       recurse: true
     register: r_hook_files
 
-  - name: Increase memory limits in hook jobs
+  # Infra hook memory is already controlled by hookResources (1Gi limit upstream).
+  # Keep the lab allowance for hooks that still hardcode a smaller limit.
+  - name: Increase hardcoded memory limits in hook jobs
     ansible.builtin.replace:
       path: "{{ item.path }}"
-      regexp: 'memory: [0-9]+Mi'
-      replace: 'memory: 1Gi'
+      regexp: '(limits:\n\s+cpu: \S+\n\s+memory:) [0-9]+Mi'
+      replace: '\g<1> 1Gi'
     loop: "{{ r_hook_files.files | selectattr('path', 'search', '/hooks/') }}"
     loop_control:
       label: "{{ item.path | basename }}"
 
-  - name: Increase backoff limits in hook jobs
+  # Preserve hooks that deliberately disable retries (backoffLimit: 0).
+  - name: Increase positive backoff limits in hook jobs
     ansible.builtin.replace:
       path: "{{ item.path }}"
-      regexp: 'backoffLimit: [0-9]+'
+      regexp: 'backoffLimit: [1-9][0-9]*'
       replace: 'backoffLimit: 30'
     loop: "{{ r_hook_files.files | selectattr('path', 'search', '/hooks/') }}"
     loop_control:
