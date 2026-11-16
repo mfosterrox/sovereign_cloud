@@ -52,7 +52,7 @@
 - name: Route libvirt guest network via BMF host on all nodes
   kubernetes.core.k8s:
     state: present
-    template: guest-route-machineconfig.yaml.j2
+    definition: "{{ lookup('ansible.builtin.template', 'guest-route-machineconfig.yaml.j2') | from_yaml }}"
   loop:
   - master
   - worker
