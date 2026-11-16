@@ -115,6 +115,28 @@
         regexp: openshift-storage
         replace: openshift-lvm-storage
 
+    - name: Read LVMS chart template for disk selector support
+      when: ocp4_workload_osac_lvms_disks | length > 0
+      ansible.builtin.slurp:
+        src: >-
+          ~{{ ansible_user }}/{{ ocp4_workload_osac_installer_directory }}/charts/osac-infra/templates/lvms.yaml
+      register: r_osac_lvms_template
+
+    # Older releases accept the Helm values but do not render the selector.
+    # Add the missing values reference without replacing the upstream template.
+    - name: Backport LVMS Helm disk selector to older OSAC releases
+      when:
+      - ocp4_workload_osac_lvms_disks | length > 0
+      - "'optionalPaths' not in (r_osac_lvms_template.content | b64decode)"
+      ansible.builtin.replace:
+        path: >-
+          ~{{ ansible_user }}/{{ ocp4_workload_osac_installer_directory }}/charts/osac-infra/templates/lvms.yaml
+        regexp: '(            default: true\n)'
+        replace: |
+          \g<1>            deviceSelector:
+                        optionalPaths:
+          {{ '{{' }} toYaml .Values.lvms.deviceSelector.optionalPaths | indent 16 {{ '}}' }}
+
     - name: Patch LVMS configure-lvms.sh namespace to openshift-lvm-storage in osac-infra
       ansible.builtin.replace:
         path: >-
