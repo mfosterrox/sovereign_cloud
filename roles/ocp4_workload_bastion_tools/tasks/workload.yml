@@ -56,8 +56,9 @@
     become: true
     vars:
       ansible_become_password: "{{ bastion_ansible_ssh_pass | default(omit) }}"
+      _cosign_base: https://github.com/sigstore/cosign/releases/download/
     ansible.builtin.get_url:
-      url: "https://github.com/sigstore/cosign/releases/download/{{ ocp4_workload_bastion_tools_cosign_version }}/cosign-linux-{{ ocp4_workload_bastion_tools_goarch }}"
+      url: "{{ _cosign_base }}{{ ocp4_workload_bastion_tools_cosign_version }}/cosign-linux-{{ ocp4_workload_bastion_tools_goarch }}"
       dest: /usr/local/bin/cosign
       mode: "0755"
       checksum: "{{ ocp4_workload_bastion_tools_cosign_checksums[ocp4_workload_bastion_tools_goarch] }}"
