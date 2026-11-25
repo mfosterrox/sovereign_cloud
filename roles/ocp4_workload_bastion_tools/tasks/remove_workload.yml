@@ -1,0 +1,5 @@
+---
+# The sandbox destroy removes the bastion.
+- name: Leave bastion packages alone on destroy
+  ansible.builtin.debug:
+    msg: Destroy does not uninstall podman or cosign. The bastion goes away with the sandbox.

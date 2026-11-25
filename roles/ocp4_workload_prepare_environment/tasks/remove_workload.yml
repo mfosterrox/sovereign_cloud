@@ -58,3 +58,18 @@
     api_version: v1
     kind: Namespace
     name: "{{ ocp4_workload_prepare_environment_policy_namespace }}"
+
+- name: Remove lab virtual machine
+  kubernetes.core.k8s:
+    state: absent
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    name: "{{ ocp4_workload_prepare_environment_vm_name }}"
+    namespace: "{{ ocp4_workload_prepare_environment_vm_namespace }}"
+
+- name: Remove lab virtual machine namespace
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Namespace
+    name: "{{ ocp4_workload_prepare_environment_vm_namespace }}"

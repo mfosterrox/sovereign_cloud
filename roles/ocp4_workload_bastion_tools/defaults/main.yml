@@ -1,0 +1,9 @@
+---
+# Student account created by the OCP 5 pool bastion. Rootless podman needs a subuid range.
+ocp4_workload_bastion_tools_student_user: lab-user
+
+# v2.4.2+ is required for `cosign initialize --root-checksum`. Stay on v2 so tag-based `cosign sign` works.
+ocp4_workload_bastion_tools_cosign_version: v2.6.5
+ocp4_workload_bastion_tools_cosign_checksums:
+  amd64: sha256:c3b4f5410e608af03a5eb0aaac84a4313d8da131248e08ff1759ac70c79d1644
+  arm64: sha256:426193b4c5da4d4d643e822f48fe0cc8a476ca1782a272704831f5a0cef716d7

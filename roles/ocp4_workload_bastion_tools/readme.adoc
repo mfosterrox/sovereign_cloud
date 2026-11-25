@@ -1,0 +1,7 @@
+= ocp4_workload_bastion_tools - Install podman and cosign on the bastion
+
+podman comes from the bastion RPM repositories. cosign v2.6.5 is installed to `/usr/local/bin` so the Showroom terminal can sign images.
+
+These are host commands. They are not cluster resources and are not part of the GitOps application.
+
+See defaults/main.yml for variables to set.

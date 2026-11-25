@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  role_name: ocp4_workload_bastion_tools
+  author: Red Hat, Michael Foster (mfoster@redhat.com)
+  description: |
+    Install podman and cosign on the lab bastion.
+  license: MIT
+  min_ansible_version: "2.9"
+  platforms:
+  - name: EL
+    versions:
+    - all
+  galaxy_tags:
+  - ocp
+  - openshift
+dependencies: []

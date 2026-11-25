@@ -1,0 +1,97 @@
+---
+- name: Require bastion connection details
+  ansible.builtin.assert:
+    that:
+    - bastion_ansible_host | default('') | length > 0
+    - bastion_ansible_user | default('') | length > 0
+    fail_msg: bastion_ansible_host and bastion_ansible_user are required to install podman and cosign.
+
+- name: Install podman and cosign on the bastion
+  when:
+  - bastion_ansible_host | default('') | length > 0
+  - bastion_ansible_user | default('') | length > 0
+  block:
+  - name: Add the bastion for package installation
+    ansible.builtin.add_host:
+      name: ocp4-workload-bastion-tools
+      ansible_host: "{{ bastion_ansible_host }}"
+      ansible_user: "{{ bastion_ansible_user }}"
+      ansible_port: "{{ bastion_ansible_port | default(22) | int }}"
+      ansible_password: "{{ bastion_ansible_ssh_pass | default('') }}"
+      ansible_ssh_common_args: >-
+        -o StrictHostKeyChecking=no
+        -o UserKnownHostsFile=/dev/null
+        -o ConnectTimeout=15
+
+  - name: Install podman
+    delegate_to: ocp4-workload-bastion-tools
+    become: true
+    vars:
+      ansible_become_password: "{{ bastion_ansible_ssh_pass | default(omit) }}"
+    ansible.builtin.package:
+      name: podman
+      state: present
+
+  - name: Read the bastion architecture
+    delegate_to: ocp4-workload-bastion-tools
+    become: false
+    ansible.builtin.command: uname -m
+    register: ocp4_workload_bastion_tools_uname
+    changed_when: false
+
+  - name: Reject an unsupported bastion architecture
+    when: ocp4_workload_bastion_tools_uname.stdout not in ['x86_64', 'amd64', 'aarch64', 'arm64']
+    ansible.builtin.fail:
+      msg: "Unsupported bastion architecture {{ ocp4_workload_bastion_tools_uname.stdout }}"
+
+  - name: Choose the cosign build for this architecture
+    ansible.builtin.set_fact:
+      ocp4_workload_bastion_tools_goarch: "{{ _arch }}"
+    vars:
+      _machine: "{{ ocp4_workload_bastion_tools_uname.stdout }}"
+      _arch: "{{ 'amd64' if _machine in ['x86_64', 'amd64'] else 'arm64' }}"
+
+  - name: Install cosign
+    delegate_to: ocp4-workload-bastion-tools
+    become: true
+    vars:
+      ansible_become_password: "{{ bastion_ansible_ssh_pass | default(omit) }}"
+    ansible.builtin.get_url:
+      url: "https://github.com/sigstore/cosign/releases/download/{{ ocp4_workload_bastion_tools_cosign_version }}/cosign-linux-{{ ocp4_workload_bastion_tools_goarch }}"
+      dest: /usr/local/bin/cosign
+      mode: "0755"
+      checksum: "{{ ocp4_workload_bastion_tools_cosign_checksums[ocp4_workload_bastion_tools_goarch] }}"
+
+  - name: Check the student account
+    delegate_to: ocp4-workload-bastion-tools
+    become: true
+    vars:
+      ansible_become_password: "{{ bastion_ansible_ssh_pass | default(omit) }}"
+    ansible.builtin.command: getent passwd {{ ocp4_workload_bastion_tools_student_user }}
+    register: ocp4_workload_bastion_tools_student
+    changed_when: false
+    failed_when: false
+
+  - name: Check the student subuid range
+    when: ocp4_workload_bastion_tools_student.rc == 0
+    delegate_to: ocp4-workload-bastion-tools
+    become: true
+    vars:
+      ansible_become_password: "{{ bastion_ansible_ssh_pass | default(omit) }}"
+    ansible.builtin.command: grep -q '^{{ ocp4_workload_bastion_tools_student_user }}:' /etc/subuid
+    register: ocp4_workload_bastion_tools_subuid
+    changed_when: false
+    failed_when: false
+
+  - name: Allow the student account to run rootless podman
+    when:
+    - ocp4_workload_bastion_tools_student.rc == 0
+    - ocp4_workload_bastion_tools_subuid.rc | default(0) != 0
+    delegate_to: ocp4-workload-bastion-tools
+    become: true
+    vars:
+      ansible_become_password: "{{ bastion_ansible_ssh_pass | default(omit) }}"
+    ansible.builtin.command: >-
+      usermod --add-subuids 200000-265535 --add-subgids 200000-265535
+      {{ ocp4_workload_bastion_tools_student_user }}
+    changed_when: true
