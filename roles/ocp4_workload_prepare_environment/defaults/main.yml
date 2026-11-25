@@ -67,9 +67,11 @@ ocp4_workload_prepare_environment_autoshift_dryrun: true
 # VirtualMachine for scanning
 # ------------------------------------------------
 # Create the VirtualMachine during provision. Set false to leave the namespace
-# and cloud-init Secret only, so the lab can create the VM and install the
-# RHACS virtualization scanning agent.
+# and cloud-init Secret only. The VM cloud-init disk reads Secret key userdata.
 ocp4_workload_prepare_environment_vm_deploy: true
+# Always starts the guest. Halted leaves the VM defined and stopped so the
+# first start uses the cloud-init Secret.
+ocp4_workload_prepare_environment_vm_run_strategy: Always
 ocp4_workload_prepare_environment_vm_name: rhel
 ocp4_workload_prepare_environment_vm_namespace: rhelvm
 ocp4_workload_prepare_environment_vm_secret_name: "{{ ocp4_workload_prepare_environment_vm_name }}-cloudinit"
